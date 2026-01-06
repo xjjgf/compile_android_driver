@@ -1,4 +1,4 @@
-name: Android Kernel Driver Buildeguod
+name: Android Kernel Driver Builder a KO
 
 on:
   workflow_dispatch:
@@ -8,9 +8,6 @@ on:
         required: true
       kernel_version:
         description: 'Kernel Version (e.g., 6.1)'
-        required: true
-      driver_name:
-        description: 'Driver Module Name (e.g., mydriver.ko)'
         required: true
       target_arch:
         description: 'Target Architecture (aarch64, x86_64, etc.)'
@@ -29,6 +26,21 @@ jobs:
         run: |
           mkdir kerneldriver
           mv ./code/*.h ./code/*.c ./code/Makefile kerneldriver/
+          
+      - name: Extract driver name from Makefile
+        id: get_driver_name
+        run: |
+          # 从Makefile中提取obj-m定义的模块名
+          DRIVER_NAME=$(grep -E '^\s*obj-m\s+\+=\s+\S+\.o' kerneldriver/Makefile | sed 's/.*+=\s*\(.*\)\.o/\1.ko/' | head -n1)
+          
+          if [ -z "$DRIVER_NAME" ]; then
+            echo "❌ Error: 未在code/Makefile中找到obj-m定义的模块"
+            echo "请确保Makefile中有类似: obj-m += mydriver.o"
+            exit 1
+          fi
+          
+          echo "检测到驱动模块: $DRIVER_NAME"
+          echo "driver_name=$DRIVER_NAME" >> $GITHUB_OUTPUT
           
       - name: Install repo tool
         run: |
@@ -55,7 +67,7 @@ jobs:
         if: ${{ github.event.inputs.android_version > 13 }}
         run: |
           cd android-kernel
-          MODULE_NAME="drivers/kerneldriver/${{ github.event.inputs.driver_name }}"
+          MODULE_NAME="drivers/kerneldriver/${{ steps.get_driver_name.outputs.driver_name }}"
           
           awk -i inplace -v module="$MODULE_NAME" '
             BEGIN { added=0 }
@@ -80,7 +92,7 @@ jobs:
         if: ${{ github.event.inputs.android_version <= 13 }}
         run: |
           cd android-kernel
-          echo "drivers/kerneldriver/${{ github.event.inputs.driver_name }}" >> common/android/gki_${{ github.event.inputs.target_arch }}_modules
+          echo "drivers/kerneldriver/${{ steps.get_driver_name.outputs.driver_name }}" >> common/android/gki_${{ github.event.inputs.target_arch }}_modules
           
       - name: Increase stack frame size limit
         run: |
@@ -117,22 +129,23 @@ jobs:
           echo "OUTPUT_PATH=$OUTPUT_PATH" >> $GITHUB_ENV
         continue-on-error: true
       
-      # 验证指定的ko文件是否存在
-      - name: Verify specific kernel module exists
+      # 验证ko文件是否存在
+      - name: Verify kernel module exists
         run: |
           cd android-kernel
-          KO_FILE=$(find "${{ env.OUTPUT_PATH }}" -name "${{ github.event.inputs.driver_name }}" -type f | head -n1)
+          KO_FILE=$(find "${{ env.OUTPUT_PATH }}" -name "${{ steps.get_driver_name.outputs.driver_name }}" -type f | head -n1)
           if [ -z "$KO_FILE" ]; then
-            echo "❌ Error: 未找到指定的ko文件: ${{ github.event.inputs.driver_name }}"
-            echo "请确保code/Makefile中生成的模块名与driver_name输入一致"
+            echo "❌ Error: 未找到ko文件: ${{ steps.get_driver_name.outputs.driver_name }}"
+            echo "OUTPUT_PATH内容:"
+            find "${{ env.OUTPUT_PATH }}" -name "*.ko" 2>/dev/null || echo "  无ko文件"
             exit 1
           fi
           echo "✅ 找到驱动模块: $KO_FILE"
           echo "KO_FILE=$KO_FILE" >> $GITHUB_ENV
       
-      # 只上传指定的ko文件
-      - name: Upload specific kernel module
+      # 上传ko文件
+      - name: Upload kernel module
         uses: actions/upload-artifact@v4.6.2
         with:
-          name: ${{ github.event.inputs.driver_name }}-${{ github.event.inputs.target_arch }}
+          name: ${{ steps.get_driver_name.outputs.driver_name }}-${{ github.event.inputs.target_arch }}
           path: android-kernel/${{ env.KO_FILE }}
